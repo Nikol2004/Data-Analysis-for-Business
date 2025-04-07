@@ -1,0 +1,1967 @@
+---
+title: "ProjectWork_O.T.R"
+author: "Nikol Tushaj, Rajla Culli, Elina Yilmaz"
+output: html_document
+date: "2025-03-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<h1 style="text-align:center;">♥ Introduction ♥</h1>
+
+The objective of this project is to analyze the Hitters dataset using statistical and machine learning techniques in order to predict the salary level of major league baseball players. The main focus is in applying and evaluating a multinomial logistic regression model, using a wide set of performance statistics as predictors. The salary variable, originally quantitative, is transformed into a categorical variable through salary tertiles. By implementing proper data preprocessing, visualization, model fitting, and cross-validation strategies, we aim to identify the most accurate and interpretable model. The final outcome of this work is to evaluate the predictive power of the full model versus reduced models, while also gaining insight into the key performance metrics that drive salary differences in professional baseball.
+
+```{r import-libraries, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(nnet)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(corrplot)
+library(ggcorrplot)
+library(DT)
+library(skimr)
+library(tibble)
+library(e1071)
+library(dplyr)
+library(patchwork)
+library(car)
+library(ggthemes)
+library(scales)
+library(viridis)
+library(ggrepel)
+library(glmnet)
+library(reshape2)
+library(plotly)
+```
+
+<h2>Loading the data</h2>
+
+```{r load-dataset, warning=FALSE, message=FALSE}
+
+Hitters <- read.csv("Hitters.csv")
+```
+
+<h2>EDA</h2>
+
+<h3>General Overview</h3>
+
+In this section, we examine the overall structure of the Hitters dataset. The code creates a summary table showing the variable names, their data types, and sample values using the **`tibble`**, **`sapply`**, and **`head`** functions. This helps quickly understand what kind of data we're working with. Additionally, we use the **`skim()`** function from the **`skimr`** package to produce an in-depth summary of the dataset, including number of rows, column types, missing values, and basic statistics such as mean, standard deviation, and quartiles for each variable.
+
+```{r general-overview, message=FALSE, warning=FALSE}
+
+structure_table <- tibble(
+  Variable = names(Hitters),
+  Type = sapply(Hitters, function(x) class(x)[1]),
+  Example_Values = sapply(Hitters, function(x) paste(head(x, 3), collapse = ", "))
+)
+
+knitr::kable(structure_table, caption = "Structure of the Hitters Dataset")
+
+skim(Hitters)
+```
+**Interpretation**
+
+* The dataset contains 317 observations and 20 variables, where 17 are numeric and 3 are character (categorical). 
+* The numerical summary indicates a wide range of values across performance statistics. For instance, **`AtBat`** has a mean of around 381, while career statistics like **`CAtBat`** can reach values as high as 14,053. 
+* The summary also helps spot potential outliers or skewed distributions, which will be important for model accuracy and variable transformations.
+
+<h4>Overview of the Categorical Data</h4>
+
+```{r categorical-barplots, fig.height=4, fig.width=12, echo=TRUE, message=FALSE}
+
+cat_vars <- Hitters %>% select_if(is.character)
+
+plots <- lapply(names(cat_vars), function(var) {
+  ggplot(Hitters, aes_string(x = var)) +
+    geom_bar(fill = "#914777", color = "black") +
+    labs(title = paste("Barplot of", var),
+         x = var, y = "Count") +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(angle = 0)
+    )
+})
+
+wrap_plots(plots, nrow = 1)
+```
+**Interpretation**
+
+* To better understand the distribution of the categorical variables in the dataset, we created barplots for **`League`**, **`Division`**, and **`NewLeague`**.
+* From the plots, we observe that the majority of players belonged to League A in both the 1986 (**`League`**) and 1987 (**`NewLeague`**) seasons, although the distribution is fairly balanced with League N. Similarly, the **`Division`** variable is almost perfectly split between East (E) and West (W) divisions.
+* This balanced distribution is useful for the classification task because it ensures that we have representative data from all categories, which helps avoid biased predictions when building our multinomial logistic regression model.
+
+<h3>Checking Data Integrity</h3>
+
+```{r check-duplicates}
+
+num_duplicates <- sum(duplicated(Hitters))
+cat("Number of duplicate rows:", num_duplicates, "\n")
+```
+
+```{r missing-values, message=FALSE, warning=FALSE}
+
+cat("Missing values before removal:\n\n")
+missing_before <- colSums(is.na(Hitters))
+print(missing_before[missing_before > 0])
+
+Hitters <- na.omit(Hitters)
+
+cat("\n Missing values after removal:\n\n")
+missing_after <- colSums(is.na(Hitters))
+print(missing_after[missing_after > 0])
+
+cat("\n New dataset dimensions:\n")
+print(dim(Hitters))
+```
+**Interpretation**
+
+* Before cleaning, the dataset contained 58 missing values, all of which were in the **`Salary`** column. Since our analysis relies heavily on salary as the response variable, it was necessary to remove these incomplete entries.
+* After applying **`na.omit()`**, the number of observations dropped from 317 to 259. This ensures that all remaining rows contain complete information, which is crucial for reliable modeling, especially when fitting a multinomial logistic regression where missing data could skew the predictions or reduce accuracy.
+
+<h3> Encoding Categorical Variables</h3>
+
+This code converts the three categorical variables (**`League`**, **`Division`**, and **`NewLeague`**) from character type to numeric codes using **`as.factor()`** followed by **`as.numeric()`**. This is necessary because most machine learning models in R require numeric input, not text or factor labels.
+
+```{r encoding-categorical-variables, message=FALSE, warning=FALSE}
+
+Hitters$League <- as.numeric(as.factor(Hitters$League))
+Hitters$Division <- as.numeric(as.factor(Hitters$Division))
+Hitters$NewLeague <- as.numeric(as.factor(Hitters$NewLeague))
+
+str(Hitters[, c("League", "Division", "NewLeague")])
+
+unique(Hitters$League)
+unique(Hitters$Division)
+unique(Hitters$NewLeague)
+```
+**Interpretation**
+* After encoding, each category is now represented by either 1 or 2. For example, League A and N are now 1 and 2, respectively. This transformation ensures that the categorical variables can be used properly in the regression model without causing erros.
+
+
+<h3> Assessing Skewness</h3>
+
+This chunk identifies skewed numerical variables using the **`skewness()`** function and applies a log transformation to reduce the skewness.
+
+A threshold of absolute skewness > 1 was used to define which variables needed transformation. 
+
+We visualize the distributions before and after the transformation for comparison. Then, the code overwrites the original variables with their log-transformed versions and summarizes the skewness reduction in a comparison table. 
+
+This step is important to improve model performance and meet assumptions of algorithms that expect more normally distributed input. 
+
+```{r skewness-transformation, echo=TRUE, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+
+numeric_vars <- Hitters[, sapply(Hitters, is.numeric)]
+
+skew_vals <- sapply(numeric_vars, function(x) skewness(x, na.rm = TRUE))
+
+skewed_vars <- names(skew_vals[abs(skew_vals) > 1]) 
+
+par(mfrow = c(2,2))
+for (var in head(skewed_vars, 4)) {
+  hist(Hitters[[var]], main = paste("Original:", var), col = "#c268b7", xlab = var)
+  hist(log(Hitters[[var]] + 1), main = paste("Log-Transformed:", var), col = "#76226b", xlab = paste("log(", var, ")"))
+}
+par(mfrow = c(1,1))
+
+for (var in skewed_vars){
+  if (all(Hitters[[var]] >= 0)) {
+    Hitters[[var]] <- log(Hitters[[var]] + 1)
+  }
+}
+
+post_skew <- sapply(Hitters[skewed_vars], function(x) skewness(x, na.rm = TRUE))
+
+Skew_Before <- round(skew_vals[skewed_vars], 2)
+Skew_After <- round(post_skew, 2)
+
+skew_table <- data.frame(
+  Variable = skewed_vars,
+  Skew_Before = Skew_Before,
+  Skew_After = Skew_After
+)
+
+knitr::kable(skew_table, caption = "Skewness BEfore and After Log Transformation")
+```
+**Interpretation**
+
+* The histograms show that variables like **`CAtBat`**. **`CHits`**, and **`CRuns`** were highly right-skewed initially, but their distributions became much more symmetric after log transformation.
+
+* The summary table confirms this improvement: skewness values decreased significantly and even flipped signs in some cases. 
+
+* Reducing skewness like this can help stabilize variance and improve the reliability of our regression models, especially when using techniques sensitive to the distribution of input variables.
+
+<h3>Outlier Handling</h3>
+
+This code uses **`ggplot2`** to create faceted boxplots for all numeric variables in the Hitters dataset. 
+
+It reshapes the data into long format and displays each variable in its own panel using **`facet_wrap()`**. 
+
+Outliers are highlighted in blue to make them visually stand out. This is helpful for quickly identifying extreme values across all features in one compact view.
+
+```{r boxplots-before-removal, fig.width=12, fig.height=8, warning=FALSE, message=FALSE}
+
+Hitters_long <- Hitters %>%
+  select_if(is.numeric) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+
+ggplot(Hitters_long, aes(x = "", y = Value, fill = Variable)) +
+  geom_boxplot(outlier.shape = 21, outlier.color = "blue", outlier.fill = "white") +
+  facet_wrap(~ Variable, scales = "free", ncol = 4) +
+  labs(title = "Boxplots of Variables (Faceted)",
+       x = "", y = "Value") +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+```
+**Interpretation**
+
+* The boxplots reveal that several variables have outliers, with some showing strong asymmetry or long tails. 
+
+* This is important in our project since outliers can distort model training and affect the accuracy of predictions, especially in regression models.
+
+
+Here we detect and remove outliers from the numeric variables in the Hitters dataset using IQR (Interquartile Range) method. 
+
+A custom function identifies row indices where values fall outside the range **`$Q1 - 1.5 IQR`**, **`Q3 + 1.5 * IQR`**, which is a common threshold for defining outliers. 
+
+This function is applied across all numeric columns, and all corresponding rows with outliers are collected and removed. The final output prints how many rows were removed and updates the dataset to reflect its new size. 
+
+```{r remove-outliers, warning=FALSE, message=FALSE}
+
+get_outlier_indices <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  which(x < (Q1 - 1.5 * IQR) | x > (Q3 + 1.5 * IQR))
+}
+
+numeric_cols <- sapply(Hitters, is.numeric)
+Hitters_numeric <- Hitters[, numeric_cols]
+
+outlier_indices <- unique(unlist(lapply(Hitters_numeric, get_outlier_indices)))
+
+cat("Total outliers removed:", length(outlier_indices), "\n")
+Hitters <- Hitters[-outlier_indices, ]
+
+cat("New dataset size:", dim(Hitters)[1], "rows and", dim(Hitters)[2], "columns\n")
+```
+```{r boxplots-after-removal, fig.width=12, fig.height=8, warning=FALSE, message=FALSE}
+
+Hitters_long_clean <- Hitters %>%
+  select_if(is.numeric) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+
+ggplot(Hitters_long_clean, aes(x = "", y = Value, fill = Variable)) +
+  geom_boxplot(outlier.shape = 21, outlier.color = "blue", outlier.fill = "white") +
+  facet_wrap(~ Variable, scales = "free", ncol = 4) +
+  labs(title = "Boxplots of Variables After Outlier Removal (Faceted)",
+       x = "", y = "Value") +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+```
+**Interpretation**
+
+* After applying the IQR method to remove outliers, the boxplots of the Hitters dataset appear much cleaner and more symmetric. Most variables--like **`CAtBat`**, **`CHits`**, **`CRuns`**, and **`Salary`**--show tighter interquartile ranges and fewer extreme points, which improves the reliability of the modeling process. While some mild outliers still exist, the overall spread of the data is now more balanced.
+
+* This step is crucial in our project because extreme values could distort the predictions of the multinomial logistic regression model we're using to classify players into salary levels. With the reduced influence of outliers, the model will now generalize better to unseen data and produce more stable and accurate results.
+
+<h3> Scaling Numerical Predictors</h3>
+
+In this step, we scale all numeric predictors in the dataset using standardization (z-score scaling), which centers the variables at a mean 0 and a standard deviation of 1. 
+
+We exclude categorical variables and the target variable **`Salary`** from this process, as they should not be scaled. This scaling ensures that all features contribute equally to distance-based models and avoids dominance by variables with larger numeric ranges. 
+
+```{r scaling, message=FALSE, warning=FALSE}
+numeric_cols <- sapply(Hitters, is.numeric)
+
+exclude_cols <- c("League", "Division", "NewLeague", "Salary")
+numeric_cols[names(numeric_cols) %in% exclude_cols] <- FALSE
+
+Hitters_scaled <- Hitters
+Hitters_scaled[, numeric_cols] <- scale(Hitters[, numeric_cols])
+```
+
+```{r scrollable-summary, results='asis', echo=FALSE}
+cat("<div style='overflow-x: auto;'>")
+knitr::kable(summary(Hitters_scaled), caption = "Summary of Scaled Variables")
+cat("</div>")
+```
+**Interpretation**
+
+* The summary table shows that all scaled numeric variables now have a mean close to 0 and comparable ranges, with values mostly between -2.5 and 2.5. This is essential for our multinomial logistic regression and the other models because many algorithms are sensitive to the scale of input features. 
+
+* Without scaling, variables like **`CAtBat`** or **`CRuns`** could have overpowered other predictors, leading to biased coefficients or inefficient splits in the tree-based model. This step helps us build fair and interpretabl emodels for predicting player salary levels. 
+
+```{r scaling-effects, echo=TRUE, fig.width=10, fig.height=4}
+
+par(mfrow = c(1,2))
+hist(Hitters$Years, breaks = 20, main = "Original Years", col = "#c268b7")
+hist(Hitters_scaled$Years, breaks = 20, main = "Scaled Years", col = "#76226c")
+par(mfrow = c(1,1))
+```
+**Interpretation**
+
+* The histogram comparison shows the variable **`Years`** before and after scaling. While the shape distribution remain the same (right-skewed), the scaled version now has a mean of 0 and is measured in standard deviations.
+
+* This ensures that **`Years`**, like the other predictors, contributes fairly during model training without being influenced by its original scale or unit.
+
+```{r before-scaling, results='asis', echo=FALSE}
+cat("<div style='overflow-x: auto;'>")
+sapply(Hitters[, numeric_cols], function(x) c(Mean = mean(x, na.rm = TRUE), SD = sd(x, na.rm = TRUE))) %>%
+  round(2) %>%
+  knitr::kable(caption = "Mean and Standard Deviation of Numeric Variables Before Scaling")
+cat("</div>")
+```
+```{r after-scaling, results='asis', echo=FALSE}
+cat("<div style='overflow-x: auto;'>")
+sapply(Hitters_scaled[, numeric_cols], function(x) c(Mean = mean(x), SD = sd(x))) %>%
+  round(2) %>%
+  knitr::kable(caption = "Mean and Standard Deviation of Scaled Numeric Variables")
+cat("</div>")
+```
+**Interpretation**
+
+* The first table shows the mean and standard deviation of numeric variables before scaling, where we can see a wide range of values. 
+
+* For example, **`RBI`** had a mean of 51.49 and a standard deviation of 25.50, while **`CHmRun`** had a much smaller mean of 3.56. This difference in scale could cause certain variables to dominate during model training.
+
+* After applying standardization, as shown in the second table, all numeric variables now have a mean of 0 and a standard deviation of 1. 
+
+* This uniform scale allows each feature to contribute equally to distance-based and regression models, such as the multinomial logistic regression used in this project to classify salary levels. It improves convergence and interpretability by putting all predictors on the same footing.
+
+<h3>Checking P-Values</h3>
+
+This code fits a multiple linear regression model with **`Salary`** as the dependent variable and all other predictors from the scaled dataset as independent variables.
+
+It then extracts the p-values of eacah predictor from the model summary and displays them in ascending order. This helps us evaluate which variables are statistically significant in predicting salary, based on the common threshold.
+
+```{r pvalue-linear-salary, echo=TRUE, message=FALSE, warning=FALSE}
+
+linear_model <- lm(Salary ~ ., data = Hitters_scaled)
+
+summary_lm <- summary(linear_model)
+
+p_values <- summary_lm$coefficients[, 4]
+pval_df <- data.frame(
+  Variable = names(p_values),
+  P_value = round(p_values, 4)
+) %>%
+  arrange(P_value)
+
+knitr::kable(pval_df, caption = "P-values for Predictors of Salary (Full Model, No Splitting)")
+```
+**Interpretation**
+
+* From the results, **`Years`**, **`Walks`**, and **`PutOuts`** have p-values below 0.05, meaning they are statistically significant predictors of salary in our dataset. This makes sense in the context of our project, as more years of experience and better performance in fielding and on-base skills (like walks) are likely to influence player salaries. 
+
+* On the other hand, variables like **`CHmRun`**, **`CRuns`**, and **`RBI`** show higher p-values, indicating weaker or non-significant relationships with salary when controlling for other variables. This insight can guide us in refining our feature set or focusing our model on the most relevant predictors.
+
+<h3> Assessing Correlations </h3>
+
+```{r correlation-matrix-with-target, message=FALSE, warning=FALSE}
+
+numeric_vars <- Hitters_scaled %>% select_if(is.numeric)
+
+cor_with_salary <- cor(numeric_vars, use = "complete.obs")[, "Salary"]
+cor_df <- tibble(
+  Variable = names(cor_with_salary),
+  Correlation = cor_with_salary
+) %>%
+  filter(Variable != "Salary") %>%
+  arrange(desc(Correlation))
+
+ggplot(cor_df, aes(x = "Salary", y = reorder(Variable, Correlation), fill = Correlation)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  geom_text(aes(label = round(Correlation, 2)), size = 4, color = "black") + 
+  scale_fill_gradient2(
+    low = "#67a9cf",
+    mid = "white",
+    high = "#d01c8b",
+    midpoint = 0,
+    limits = c(-1, 1),
+    name = "Correlation"
+  ) +
+  labs(
+    title = "Heatmap of Correlation with Salary",
+    x = "",
+    y = "Variables"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+**Interpretation**
+
+* This heatmap shows the strength of the linear correlation between each variable and the player's salary. We can see that variables like **`CHits`**, **`CRuns`**, **`CRBI`**, **`CAtBat`**, and **`CWalks`** have the highest positive correlations (above 0.79), suggesting that career performance stats are strong indicators of a player's salary.
+
+* In contrast, variables like **`League`**, **`NewLeague`**, and **`Division`** have very weak or even slightly negative correlations, meaning they are unlikely to have a meaningfyl linear relationship with salary. This aligns with the context of our project--players are likely paid more for consistent performance over their careers rather than their current league or division.
+
+<h4>Assessing Multicollinearity</h4>
+
+In this code chunk, we calculates and visualized the full correlation matrix for all variables in the **`Hitters_scaled`** dataset. The first step converts any factor variables into numeric from using **`lapply`**, then computes pairwise correlations using **`cor()`** with **`complete.obs`** to handle any remaining NA values.
+
+We then define a custom colors palette using three shades to visually represent the strength and direction of the correlations. Finally, we used **`ggcorrplot()`** to generate a heatmap of the matrix, showing only the upper triangle for a cleaner visual layout.
+
+```{r correlation-matrix-between-variables, message=FALSE, warning=FALSE}
+
+Hitters_num <- as.data.frame((lapply(Hitters_scaled, function(x) {
+  if (is.factor(x)) as.numeric(x) else x
+})))
+
+# Compute correlation matrix
+cor_matrix <- cor(Hitters_num, use = "complete.obs")
+
+custom_colors <- c("#c268b7", "white", "#76226c")
+
+ggcorrplot(cor_matrix,
+           method = "square",
+           type = "upper",
+           lab = FALSE,
+           colors = custom_colors,
+           title = "Correlation Matrix of All Variables") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold", margin = ggplot2::margin(t = 5)),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8, margin = ggplot2::margin(r = 5))
+  )
+```
+**Interpretation**
+
+* The correlation matrix heatmap gives us a comprehensive view of how each variable relates to the others in our dataset. Most notably, we can observe strong positive correlations among cumulative performance metrics like **`CHites`**, **`CRuns`**, **`CRBI`**, and **`CAtBat`**, which makes sense as better career performance is likely associated across various batting statistics.
+
+* There's also noticeable cluster of high correlation between these cumulative stats and **`Salary`**, reinforcing that long-term performance plays a key role in salary determination. 
+
+* On the other hand, categorical variables like **`League`** and **`Division`** show very low correlation with most numeric predictors and with salary, suggesting that league affiliation may not be a key salary driver in this model. This matrix helps us understand multicollinearity risks and guides variable selection for modeling. 
+
+```{r correlation-coefficients, warning=FALSE, message=FALSE}
+
+datatable(round(cor_matrix, 2),
+          caption = "Interactive Correlation Matrix",
+          options = list(pageLength = 10, scrollX = TRUE))
+```
+**Interpretation**
+
+* This interactive table presents the pairwise correlation coefficients between the numeric variables in the Hitters dataset. The high values between **`AtBat`**, **`Hits`**, and **`Runs`** suggest a very strong linear relationship.
+
+* This makes sense contextually because players who have more at-bats typically accumulate more hits and, consequently, more runs. Similarly, **`RBI`** (Runs Batted In) shows high correlation with both **`Hits`** (0.78) and **`HmRun`** (0.84), reflecting how power hitters significantly to scoring.
+
+* Interestingly, **`Years`** has almost no correlation with most of the other variables, indicating that tenure alone doesn't necessarily drive performance metrics. This table helps us detect multicollinearity between predictors--critical when building regression models--since variables like **`Hits`** and **`Runs`** might be too closely related to be included together. 
+
+* For modeling salary, this insight supports selecting variables that add unique information rather than those that are strongly correlated with each other.
+
+This code calculates the Variance Inflation Factor (VIF) for each predictor in our linear regression model using the scaled Hitters dataset.
+
+VIF measures how much the variance of a regression coefficient is inflated due to multicollinearity with other variables. 
+
+```{r assess-multicollinearity-vif, echo=TRUE, warning=FALSE, message=FALSE}
+
+vif_model <- lm(Salary ~ ., data = Hitters_scaled)
+
+vif_values <- vif(vif_model)
+
+vif_values
+```
+**Interpretation**
+
+* Looking at the results, several variables show high VIF values. This means these variables are highly correlated with others in the model, inflating their variance and potentially distorting the model's interpretation and reliability.
+
+* This is expected given they're all cumulative career stats, which often move together. To improve model stability and interpretability, it may be necessary to remove or combine some of these multicollinear predictors. 
+
+<h3>Using LASSO to keep the needed attributes</h3>
+
+This code performs **Lasso Regression** with cross-validation on the Hitters dataset to identify which predictors best explain salary.
+
+First, it splits the features (x) and the response (y = Salary), then performs Lazzo using **`cv.glmnet()`** to find the optimal value of lambda that minimizes the Mean Squared Error(MSE). The final model is built using that best lambda, and the non-zero coefficients (selected variables) are extracted.
+
+A plot is generated showing how MSE changes across different values of log(lambda), highlighting the optimal and 1SE rule lambdas.
+
+```{r lasso-hitters, echo=TRUE, message=FALSE, warning=FALSE}
+
+x <- as.matrix(Hitters_scaled[, !colnames(Hitters_scaled) %in% "Salary"])
+y <- Hitters_scaled$Salary
+
+# Perform Lasso with cross-validation
+set.seed(123)
+lasso_cv <- cv.glmnet(x, y, alpha = 1, standardize = FALSE)
+
+# Extract optimal lambda values
+best_lambda <- lasso_cv$lambda.min
+lambda_1se <- lasso_cv$lambda.1se
+
+# Fit final model using best lambda
+final_model <- glmnet(x, y, alpha = 1, lambda = best_lambda, standardize = FALSE)
+
+coef_matrix <- coef(final_model)
+coef_df <- as.data.frame(as.matrix(coef_matrix))
+col_name <- colnames(coef_df)[1]
+
+coef_df <- coef_df %>%
+  rownames_to_column("Variable") %>%
+  rename(Coefficient = all_of(col_name)) %>%
+  filter(Variable != "(Intercept)" & Coefficient != 0)
+
+kable(coef_df, digits = 4, caption = "Variables Selected by Lasso (Non-zero Coefficients)")
+
+selected_vars <- coef_df$Variable
+Hitters_lasso_final <- Hitters_scaled %>%
+  dplyr::select(all_of(selected_vars), Salary)
+
+cv_plot_data <- data.frame(
+  lambda = lasso_cv$lambda,
+  mse = lasso_cv$cvm,
+  se = lasso_cv$cvsd
+)
+
+ggplot(cv_plot_data, aes(x = log(lambda), y = mse)) +
+  geom_line(color = "#91477f", size = 1) +
+  geom_point(color = "#f2739f", size = 2) +
+  geom_errorbar(aes(ymin = mse - se, ymax = mse + se), width = 0.15, color = "gray60") +
+  geom_vline(xintercept = log(best_lambda), linetype = "dashed", color = "#2b303a", linewidth = 1) +
+  geom_vline(xintercept = log(lambda_1se), linetype = "dotted", color = "#2b303a", linewidth = 1) +
+  labs(
+    title = "Lasso Cross-Validation Curve",
+    subtitle = "Optimal Lambda (dashed) vs 1SE Rule (dotted)",
+    x = "Log(λ)",
+    y = "Mean Squared Error"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#4B0082"),
+    plot.subtitle = element_text(size = 12)
+  )
+```
+**Interpretation**
+
+* The **Lasso Cross-Validation Curve** shows that the best lambda occurs at the point where the Mean Squared Error is lowest, indicating the best balance between model complexity and prediction accuracy. The dotted line (1SE rule) represents a slightly more regularized model that's simpler but may sacrifice a bit of predicitve power for parsimony. 
+
+* From the table of **Variables Selected by Lasso**, we see that 12 predictors have non-zero coefficients, meaning Lasso deemed them useful for predicting salary. Notably, **`CHits`** had the strongest positive effect (0.9038), which is logical--more hits usually mean better performance and higher salary.
+
+* **`Years`** had a suprisingly negative coefficient, possibly because longer-tenured players with declining stats might earn less than newer stars. **`AtBat`** also showed a negative relationship, which might reflect that simply being at bat doesn't necessarily mean high performance unless it translates into outcomes like hits or runs.
+
+* Overall, Lasso helped simplify the model by selecting only relevant variables, reducing multicollinearity, and making the salary prediction model more interpretable and robust.
+
+
+<h3> Experience vs Performance Correlation</h3>
+
+In this part, a subset of the dataset (**`Hitters_lasso_final`**) is selected, focusing on four variables: **`Years`**, **`CHmRun`**, **`Walks`** and **`Runs`**. These are likely variables reflecting experience and performance in baseball.
+
+The **`corr()`** function calculates pairwise Pearson correlation coefficients between them using complete observations only. 
+
+Then, the matrix is reshaped into a long format using **`melt()`** from the **`reshape2`** package to prepare for visualization,
+
+A heatmap is generated using **`ggplot2`**, where aech tile represents the strength and direction of the correlation, with a custom color gradient from red (negative) to blue (positive), and numeric correlation values are overlaid directly on the tiles for easier interpretation.
+
+```{r corr-heatmap, fig.width=7, fig.height=5, message=FALSE, warning=FALSE}
+
+exp_perf_vars <- Hitters_lasso_final %>%
+  dplyr::select(Years, CHmRun, Walks, Runs)
+
+cor_matrix <- cor(exp_perf_vars, use = "complete.obs") %>%
+  round(2)
+
+cor_melted <- melt(cor_matrix)
+
+ggplot(cor_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "white", size = 0.5) +
+  geom_text(aes(label = value), color = "black", size = 4.5) +
+  scale_fill_gradient2(low = "#b2182b", mid = "white", high = "#2166ac", 
+                       midpoint = 0, limit = c(-1, 1), name = "Corr") +
+  labs(title = "Experience vs Performance: Correlation Matrix",
+       x = "", y = "") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        plot.title = element_text(face = "bold", size = 14))
+```
+**Interpretation**
+
+* This heatmap helps explore how a player's experience (**`Years`**) related to their on-field performance (**`CHmRun`**, **`Walks`**, and **`Runs`**). A strong positive correlation (0.70) between **`Years`** and **`CHmRun`** suggests that more experienced players tend to contribute more to team home runs.
+
+* However, **`Years`** has almost no correlation with **`Runs`** (-0.03) or **`Walks`** (0.08), meaning simply playing longer doesn't necessarily increase a player's scoring or plate discipline.
+
+* Interestingly, **`Walks`** and **`Runs`** are highly correlated (0.69), hinting that players who draw more walks are more likely to score, which makes sense tactically in baseball,
+
+* This matrix provides valuable insight into which aspects of experience contribute most to performance, which is central to understanding salary drivers in this dataset.
+
+<h3>Player Value Score</h3>
+
+Here we calculate a custom **Player Value Score** as a proxy for performance efficiency using the formula:
+
+**`(Runs + Walks + CHmRun) / (Years + 1)`**
+
+This score reflects how productive a player is relative to their experience. A cap is applied at the 99th percentile to avoid extreme outliers skewing the plot.
+
+Then, it selects the top 5 most efficient players based on this metric and visualizes two plots:
+
+1. **Player Value vs Salary:** A scatter plot with a LOESS smooth line showing general trends.
+
+2. **Top 5 Most Efficient Players:** Highlights the top scorers and labels them, helping compare performance to salary visually.
+
+```{r player-value-score, fig.width=10, fig.height=10, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(ggrepel)
+Hitters_lasso_final <- Hitters_lasso_final %>%
+  mutate(Player_Value_Score = (Runs + Walks + CHmRun) / (Years + 1))
+
+Hitters_lasso_final$Player_Value_Score <- pmin(
+  Hitters_lasso_final$Player_Value_Score,
+  quantile(Hitters_lasso_final$Player_Value_Score, 0.99)
+)
+
+top5 <- Hitters_lasso_final %>%
+  top_n(5, wt = Player_Value_Score) %>%
+  arrange(desc(Player_Value_Score)) %>%
+  mutate(Rank_Label = paste0("Rank ", row_number()))
+
+p1 <- ggplot(Hitters_lasso_final, aes(x = Salary, y = Player_Value_Score)) +
+  geom_point(aes(color = Player_Value_Score), size = 2.5, alpha = 0.75) +
+  geom_smooth(method = "loess", se = FALSE, color = "darkblue", linetype = "solid") +
+  scale_color_viridis_c(option = "C", direction = -1, name = "Value Score") +
+  labs(
+    title = "Player Value vs. Salary",
+    subtitle = "Does higher salary reflect higher performance?",
+    x = "Salary (Scaled)",
+    y = "Player Value Score"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    plot.margin = ggplot2::margin(t = 15, r = 20, b = 10, l = 20, unit = "pt")
+  )
+
+
+p2 <- ggplot(Hitters_lasso_final, aes(x = Salary, y = Player_Value_Score)) +
+  geom_point(color = "gray85", size = 2, alpha = 0.5) +
+  geom_point(data = top5, aes(color = Player_Value_Score), size = 5, alpha = 0.95) +
+  geom_text_repel(data = top5, aes(label = Rank_Label),
+                  fontface = "bold", size = 4, box.padding = 0.5,
+                  color = "black", segment.color = "gray40") +
+  scale_color_viridis_c(option = "D", direction = 1, name = "Value Score") +
+  labs(
+    title = "Top 5 Most Efficient Players",
+    subtitle = "Ranked by Player Value Score vs Salary",
+    x = "Salary (Scaled)",
+    y = "Player Value Score"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    plot.margin = ggplot2::margin(t = 15, r = 20, b = 10, l = 20, unit = "pt")
+  )
+
+p1 / p2 + plot_layout(heights = c(1.1, 1))
+```
+**Interpretation**
+
+*Plot 1: Player Value vs Salary*
+
+* In this plot, each dot represents a player, colored by their **`Player_Value_Score`**. The horizontal axis shows the scaled salry, while the vertical shows the value score.
+
+* While we expect that higher salaries should reflect higher performance, the LOESS curve tells a different story. The relationship is weak and non-linear, suggesting that salary alone does not reliably predict how efficiently a player performs.
+
+* Interestingly, players with mid-range salaries sometimes outperform those with higher ones--some of the top value scores are from players not earning the highest.
+
+*Plot 2: Top 5 Most Efficient Players*
+
+* This chart isolates and highlights the top 5 most efficient players, labeling them by rank. What stands out is that none of these players are the top earners. This reveals a disconnect between salary and actual on-field value, and highlights players who are likely underpaid relative to their contribution.
+
+* These insights could be useful for team managers aiming to spot hidden gems or negotiate fairer contracts.
+
+<h3>Scatterplots to visualize how these variables relate to salaries</h3>
+
+Here we generate interactive scatterplots using **`plotly`** to visualize how three selected performance variables--**`Years`**, **`AtBat`**, and **`Errors`**--relate to players' salaries.
+
+The **`lapply()`** function loops over each variable, and for each one, a scatterplot is created with players' Salary on the y-axis and the selected variable on the x-axis. 
+
+Tooltips are customized for better interactivity. Finally, **`subplot()`** is used to arrange the three plots vertically with shared Y-axes and a centralized title using **`layout()`**.
+
+```{r interactive-scatter-salary, warning=FALSE, message=FALSE, fig.height=6.5}
+
+features <- c("Years", "AtBat", "Errors")
+
+styled_plots <- lapply(features, function(var) {
+  plot_ly(
+    data = Hitters_lasso_final,
+    x = ~get(var),
+    y = ~Salary,
+    type = 'scatter',
+    mode = 'markers',
+    marker = list(color = '#914777', opacity = 0.75, size = 6),
+    hovertemplate = paste0(
+      "<b>", var, "</b>: %{x:.2f}<br>",
+      "<b>Salary</b>: %{y:.2f}<extra></extra>"
+    )
+  ) %>% layout(
+    xaxis = list(title = var, tickfont = list(size = 10), titlefont = list(size = 11)),
+    yaxis = list(title = "Salary", tickfont = list(size = 10), titlefont = list(size = 11)),
+    margin = list(l = 40, r = 10, b = 40, t = 50),  # increased top margin for the title
+    showlegend = FALSE,
+    plot_bgcolor = '#fafafa',
+    paper_bgcolor = '#fafafa'
+  )
+})
+
+subplot(styled_plots, nrows = 2, shareY = TRUE, titleX = TRUE, titleY = TRUE, margin = 0.05) %>%
+  layout(
+    title = list(
+      text = "Interactive Scatterplots: Salary vs Performance Metrics",
+      x = 0.5, font = list(size = 16, family = "Arial", color = "black")
+    )
+  )
+```
+**Interpretation**
+
+From the interactive scatterplots:
+
+* *Years vs Salary*: There's a positive relationship, showing that players with more years of experience generally earn higher salaries. This makes intuitive sense as experience is often rewarded.
+
+* *AtBat vs Salary*: A mild upward trend appears, suggesting players who get to bat more frequently may earn more--likely due to their active presence and potentital offensive contribution.
+
+* *Errors vs Salary:* There is no clear trend, implying that the number of fielding errors made by a player doesn't significantly affect salary--possibly because other metrics weigh more in contract negotiations.
+
+<h3>Salary Distribution by Division</h3>
+
+Here we visualize the salary distribution of baseball players from the Hitters dataset, split by Division (East vs West). 
+
+The **`Division`** column is first re-labeled with factor labels "East" and "West", and custom colors are defined for each group. 
+
+The plot uses **`geom_density()`** to draw smooth distribution curves for salary. Styling is applied to make the plot visually appealing with customized legends, titles, and minimalistic theme settings.
+
+```{r salary-by-division, fig.width=8.5, fig.height=5.5, warning=FALSE, message=FALSE}
+
+Hitters_lasso_final$Division <- Hitters$Division
+Hitters_lasso_final$Division <- factor(Hitters_lasso_final$Division, levels = c(1, 2), labels = c("East", "West"))
+
+division_colors <- c("East" = "#914777", "West" = "#c268b7")
+
+ggplot(Hitters_lasso_final, aes(x = Salary, fill = Division)) +
+  geom_density(alpha = 0.6, color = NA) +
+  scale_fill_manual(values = division_colors) +
+  labs(
+    title = "Salary Distribution by Division",
+    subtitle = "Comparing Scaled Salary Levels between East and West Divisions",
+    x = "Scaled Salary",
+    y = "Density",
+    fill = "Division"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10),
+    plot.margin = unit(c(12, 20, 10, 20), "pt")  
+  )
+```
+
+**Interpretation**
+
+The resulting density plot shows a comparison of scaled salary distributions between players in the *East* and *West* divisions.
+
+* Both distributions are unimodal but differ in shape:
+
+  * The *West division* has a slightly flatter and wider distribution, indicating greater variation in salaries.
+  * The *East division* shows a sharper peak around the 6.2-6.5 range, implying more players earning similar salaries.
+  
+This suggests that while salary levels are generally comparable across divisions, salary dispersion is wider in the West, potentially due to more outliers or a broader mix of player experience/performance levels.
+
+Here, we remove the variable that we created to maintain the original predictors.
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Hitters_final <- Hitters_lasso_final %>% dplyr::select(-Player_Value_Score)
+colnames(Hitters_final)
+```
+
+<h3>Creating the Salary Levels</h3>
+
+<h4>Elbow Method</h4>
+
+In this chunk, we’re using the *Elbow Method* to decide how many clusters we should use to segment the players' salaries. 
+
+We first remove **`NA`** values from the **`Salary`** column and compute the total within-cluster sum of squares (WSS) for clusters from 1 to 10 using **`kmeans()`**. Then we calculate how much WSS drops when moving from one cluster to the next, both in absolute and percentage terms.
+
+```{r elbow-method-salary-analysis, echo=TRUE, message=FALSE, warning=FALSE}
+salary_vector <- na.omit(Hitters_final$Salary)
+
+set.seed(123)
+
+wss <- sapply(1:10, function(k) {
+  kmeans(salary_vector, centers = k, nstart = 20)$tot.withinss
+})
+
+wss_diff <- c(NA, diff(wss))
+wss_pct_drop <- c(NA, round(100 * diff(wss) / head(wss, -1), 2))
+
+elbow_table <- data.frame(
+  Clusters = 1:10,
+  WSS = round(wss, 0),
+  WSS_Drop = round(wss_diff, 0),
+  Percent_Drop = wss_pct_drop
+)
+
+print(elbow_table)
+```
+**Interpretation**
+
+* The results show a sharp WSS drop from 1 to 2 clusters (−72.42%), then gradually smaller improvements as k increases. 
+
+* While 2 clusters have the biggest drop, the "elbow" is most visible at 4 clusters, where the rate of WSS reduction slows down significantly afterward. 
+
+* This suggests that 4 is the statistically optimal number of clusters, balancing model complexity with clustering efficiency. It also aligns perfectly with our goal of categorizing players into four salary levels allowing us to move forward with data-driven and interpretable segmentation.
+
+<h4>Elbow Plot</h4>
+
+Here we create an elbow plot with numerical WSS labels at each point. 
+
+It helps visualize how the total within-cluster sum of squares (WSS) changes with different numbers of clusters (K). The **`plot()`** function draws the elbow plot, and **`text()`** is used to annotate each point with its corresponding WSS value.
+
+```{r elbow-plot-annotated, echo=TRUE, message=FALSE, warning=FALSE}
+plot(1:10, wss, type = "b", pch = 19,
+     xlab = "Number of Clusters K",
+     ylab = "Total Within-Cluster Sum of Squares",
+     main = "Elbow Plot with WSS Labels")
+text(1:10, wss, labels = round(wss, 0), pos = 3, cex = 0.8)
+```
+
+**Interpretation**
+
+* The elbow plot clearly shows a sharp drop in WSS when increasing clusters from 1 to 2 (from 183 to 51), and again a noticeable drop up to K = 4. After K = 4, the decrease in WSS becomes much smaller, indicating diminishing returns.
+
+* While the biggest drop occurs at 2 clusters, we decided to go with 4 clusters as the optimal choice. This is because although K = 2 reduces WSS drastically, using 4 clusters gives us a more refined segmentation of salary levels without overcomplicating the model. 
+
+* It balances efficiency and interpretability, which is ideal for categorizing salaries into meaningful salary levels for further analysis like classification.
+
+<h4>Creating the Salary Levels</h4>
+
+In this chunk, we are creating a new categorical variable called **`SalaryLevel`** by dividing the continuous **`Salary`** variable into four levels based on quartiles. This is done using the **`cut()`** function, which splits the salary into 4 bins based on its quantile distribution:
+
+* **Rookie** (lowest 25%)
+* **Starter** (25%–50%)
+* **Pro** (50%–75%)
+* **MVP** (top 25%)
+
+We use **`include.lowest = TRUE`** to make sure the lowest salary value is included, and **`na.rm = TRUE`** to handle any missing data. Then, a frequency table and a barplot are created to show how many players fall into each salary level.
+
+```{r salary-level-creation, echo=TRUE, message=FALSE, warning=FALSE}
+
+Hitters_final$SalaryLevel <- cut(
+  Hitters_final$Salary,
+  breaks = quantile(Hitters_final$Salary, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE),
+  labels = c("Rookie", "Starter", "Pro", "MVP"),
+  include.lowest = TRUE
+)
+
+table(Hitters_final$SalaryLevel)
+
+barplot(table(Hitters_final$SalaryLevel), col = "darkblue",
+        main = "Number of Players per Salary Level",
+        ylab = "Count")
+```
+**Interpretation**
+
+* The barplot shows a relatively even distribution of players across the four salary levels: *Rookie (60)*, *Starter (59)*, *Pro (65)*, and *MVP (54)*. This confirms that our salary levels are balanced due to the use of quartiles.
+
+* This step is essential because we later use these salary levels as target categories in our classification models. 
+
+* By creating well-distributed classes, we improve the performance and fairness of the models, preventing bias toward any single salary group. It also helps in interpretability.
+
+* Now we can talk about player predictions in terms of intuitive categories rather than raw salary numbers.
+
+
+Here we remove the Salary attribute to prevent data leakage later on.
+```{r create-model-data, echo=TRUE, message=FALSE, warning=FALSE}
+names(Hitters_final)
+
+model_data <- subset(Hitters_final, select = -Salary)
+
+names(model_data)
+```
+<h4>Explore Predictors by SalaryLevel</h4>
+
+Here we create a 2x2 grid of boxplots to visually explore how four key performance indicators — **`Years`**, **`Hits`**, **`RBI`**, and **`Walks`** — vary across the defined **`SalaryLevel`** categories ("Rookie", "Starter", "Pro", "MVP"). 
+
+Each boxplot shows the distribution of a specific variable across the four salary levels using different colors to help differentiate the plots.
+
+```{r explore-predictors-by-salarylevel, echo=TRUE, message=FALSE, warning=FALSE}
+par(mfrow = c(2, 2))  
+
+boxplot(model_data$Years ~ model_data$SalaryLevel, 
+        main = "Years vs Salary Level", col = "lightblue", ylab = "Years")
+
+boxplot(model_data$Hits ~ model_data$SalaryLevel, 
+        main = "Hits vs Salary Level", col = "lightgreen", ylab = "Hits")
+
+boxplot(model_data$RBI ~ model_data$SalaryLevel, 
+        main = "RBI vs Salary Level", col = "lightcoral", ylab = "RBI")
+
+boxplot(model_data$Walks ~ model_data$SalaryLevel, 
+        main = "Walks vs Salary Level", col = "plum", ylab = "Walks")
+
+par(mfrow = c(1, 1))
+```
+**Interpretation**
+
+* These boxplots help us understand how some important performance stats differ across salary levels in the Hitters dataset. As expected, players with higher salaries tend to have higher values in **`Years`**, **`Hits`**, **`RBI`**, and **`Walks`**.
+
+  * *Years:* There's a clear upward trend — MVPs have played the longest, while Rookies are newer to the league.
+
+  * *Hits and RBI:* Both show higher medians as we go from Rookie to MVP, which makes sense since performance likely impacts salary negotiations.
+
+  * *Walks:* Again, MVPs walk more on average, which could be due to better plate discipline or reputation.
+
+* Overall, the boxplots confirm that players with stronger stats generally fall into the higher salary levels, which supports the logic behind the **`SalaryLevel`** grouping we created earlier.
+
+<h4>Model Data Summary</h4>
+
+This chunk first summarizes all variables in the **`model_data`** dataframe. Then, using **`dplyr`** and **`tidyr`**, it selects only the numeric variables and reshapes them into a long format so each value can be associated with its variable name. 
+
+The final **`ggplot`** uses **`geom_boxplot()`** to visualize the distribution of all numeric variables, showing medians, interquartile ranges, and outliers across the entire dataset.
+
+```{r model-data-summary, echo=TRUE, message=FALSE, warning=FALSE}
+
+summary(model_data)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+numeric_vars <- model_data %>% 
+  select_if(is.numeric) %>% 
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+
+ggplot(numeric_vars, aes(x = Variable, y = Value)) +
+  geom_boxplot(fill = "skyblue") +
+  labs(title = "Boxplots of Numeric Variables in model_data",
+       x = "Variable", y = "Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+**Interpretation**
+
+* The boxplot helps us quickly scan for outliers, skewness, and the spread of each numeric feature. Most of the variables appear roughly centered around zero due to previous scaling, with balanced spreads. However, *PutOuts* and *NewLeague* stand out:
+
+  * *PutOuts* has several extreme low outliers, meaning some players performed very poorly in this metric.
+
+  * *NewLeague* seems more binary and right-skewed since it’s derived from a categorical variable turned numeric.
+
+<h4>Summary of p-values and z-scores</h4>
+
+In this chunk, we’re running a *multinomial logistic regression* using the **`multinom()`** function from the **`nnet`** package to model the relationship between several predictors and the **`SalaryLevel`** outcome variable (with categories: Rookie, Starter, Pro, MVP). 
+
+We compare each level against the baseline ("Rookie") and extract coefficients, standard errors, z-values, and p-values for interpretation. Then, we combine all of this into a clean table using **`kable()`**.
+
+```{r full-model-salarylevel, echo=TRUE, message=FALSE, warning=FALSE}
+library(nnet)
+library(knitr)
+library(dplyr)
+
+full_model <- multinom(SalaryLevel ~ ., data = model_data, trace = FALSE)
+
+summary_full <- summary(full_model)
+
+coefs <- summary_full$coefficients
+std_errs <- summary_full$standard.errors
+
+z_vals <- coefs / std_errs
+p_vals <- 2 * (1 - pnorm(abs(z_vals)))
+
+levels <- rownames(coefs)
+
+coef_list <- lapply(1:length(levels), function(i) {
+  data.frame(
+    Predictor = colnames(coefs),
+    Estimate = round(coefs[i, ], 4),
+    StdError = round(std_errs[i, ], 4),
+    Z_value = round(z_vals[i, ], 3),
+    P_value = round(p_vals[i, ], 4),
+    Comparison = levels[i]
+  )
+})
+
+final_table <- bind_rows(coef_list)
+
+kable(final_table, caption = "Multinomial Logistic Regression Results by Salary Level (vs. Rookie)")
+```
+
+**Interpretation**
+
+* The regression output shows which variables significantly differentiate between salary levels. 
+
+  * For example, when comparing MVPs to Rookies, the predictors with low p-values like *CHits (p < 0.001)* and *Walks (p = 0.0013)* are statistically significant, meaning they are strong indicators of being in the MVP group instead of Rookie. The estimate for CHits is very high (13.29), which suggests that cumulative hits have a big impact on predicting top-tier players.
+
+  * Similarly, in the comparison between Pro and Rookie, *Walks (p = 0.0024)* is also a strong predictor. This shows some consistency across higher salary levels. On the other hand, many variables like **`PutOuts`**, **`DivisionWest`**, and **`NewLeague`** have high p-values across all comparisons, indicating they don’t play a significant role in predicting salary level.
+
+* This model helps us understand which performance metrics are most associated with rising salary categories in baseball. It also confirms that certain intuitive metrics (like offensive stats) are more influential than others when it comes to determining pay level.
+
+<h2>Cross-Validation</h2>
+
+Cross-validation is a resampling method used to evaluate the performance of a model on unseen data. 
+
+Instead of splitting the dataset just once into training and testing sets, cross-validation divides the data into multiple folds, trains the model on some folds, and tests it on the remaining ones. 
+
+This process is repeated several times, and the performance metrics are averaged to provide a more robust estimate of model accuracy. 
+
+In our project, we implemented **`10-fold cross-validation`** using the **`train()`** function from the caret package. This allowed us to fairly compare models by evaluating their predictive power on different subsets of the data, ensuring that our results weren’t biased by a specific train-test split. 
+
+We applied this method consistently across all models to maintain a reliable and consistent evaluation framework.
+
+<h3>LOO-CV method</h3>
+
+This chunk defines a method for selecting a cross-validation (CV) approach randomly. First, we set a seed (**`6102004`**) to ensure reproducibility of the random sampling. Then, we define a list of possible validation methods:
+
+1. Vanilla validation set
+2. Leave-One-Out Cross-Validation (LOO-CV)
+3. 5-fold CV
+4. 10-fold CV
+
+Finally, **`the sample()`** function randomly picks one method from the list and assigns it to **`chosen_method`**, which is then printed.
+
+```{r choose-cv-method, echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(6102004)  # Nikol Tushaj's bday
+
+cv_methods <- c(
+  "1. Vanilla validation set",
+  "2. Leave-One-Out CV (LOO-CV)",
+  "3. K-fold CV (K = 5)",
+  "4. K-fold CV (K = 10)"
+)
+
+chosen_method <- sample(cv_methods, 1)
+chosen_method
+```
+**Interpretation**
+
+* In our case, the selected method was Leave-One-Out Cross-Validation (LOO-CV). 
+* We decided to go with this method because it’s particularly effective when dealing with smaller datasets, like ours. 
+
+* LOO-CV trains the model on all observations except one, using the excluded one for testing, and repeats this for each data point. 
+
+* This helps us get an unbiased estimate of model performance without wasting data on a dedicated validation set. It’s computationally more intensive, but offers high reliability—especially useful for fine-tuning our models for salary level prediction.
+
+<h4>Training</h4>
+
+In this chunk, we use the **`train()`** function from the **`caret`** package to train a multinomial logistic regression model using Leave-One-Out Cross-Validation (LOOCV). 
+
+We first set up a control object **`ctrl_loo`** specifying **`"LOOCV"`** as the method, then pass it to the **`train()`** function along with the model formula and data. 
+
+This means the model is trained 238 times (once for each observation), each time leaving one observation out for testing and using the rest for training.
+
+```{r loo-cv-model, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(nnet)
+
+set.seed(6102004)  
+
+ctrl_loo <- trainControl(method = "LOOCV")
+
+loo_model <- train(
+  SalaryLevel ~ .,
+  data = model_data,
+  method = "multinom",
+  trControl = ctrl_loo,
+  trace = FALSE
+)
+print(loo_model)
+```
+**Interpretation**
+
+* LOOCV was chosen from a list of possible cross-validation methods using random sampling (seed set for reproducibility). Although it was selected randomly, LOOCV is actually a solid choice for our dataset because it's relatively small (238 observations). 
+
+* LOOCV helps reduce bias and gives a very thorough evaluation of model performance, which is useful when we want reliable accuracy without sacrificing too many observations for testing. 
+
+* From the output, we can see that the best-performing model had a decay parameter of 0.1 and reached an accuracy of about 65.97% with a Kappa of 0.55, which indicates decent agreement between predicted and actual salary levels.
+
+This code uses the trained Leave-One-Out Cross-Validation (LOOCV) multinomial model to predict the salary level for each player. It then compares the predicted values to the actual values using a confusion matrix (**`confusionMatrix()`** from the **`caret`** package), which summarizes the model's classification performance.
+
+```{r loo-confusion-matrix, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+
+preds <- predict(loo_model, newdata = model_data)
+
+conf_mat <- confusionMatrix(preds, model_data$SalaryLevel)
+```
+
+
+```{r accuracy-kappa-styled, echo=TRUE, message=FALSE, warning=FALSE}
+
+acc <- round(conf_mat$overall["Accuracy"], 4)
+kappa <- round(conf_mat$overall["Kappa"], 4)
+
+cat("**Model Accuracy:**", acc, "\n")
+cat("**Cohen's Kappa:**", kappa, "\n")
+```
+**Interpretation**
+
+* The model achieved an accuracy of *75.21%*, meaning it correctly predicted salary levels in about three-quarters of the cases.
+
+* Additionally, a *Cohen’s Kappa of 0.6692* suggests substantial agreement beyond chance, indicating that the model's predictions are quite reliable for our classification task.
+
+
+```{r confusion-matrix, echo=TRUE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+
+conf_df <- as.data.frame(conf_mat$table)
+
+conf_wide <- tidyr::pivot_wider(
+  conf_df,
+  names_from = Reference,
+  values_from = Freq
+)
+
+kable(conf_wide, caption = "Confusion Matrix: Predicted vs Actual Salary Levels") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+```
+**Interpretation**
+
+* The resulting table shows how our model's predictions compare to the actual salary levels. 
+
+* Most "Rookie" and "MVP" players were correctly classified, but there's a bit more confusion between "Starter" and "Pro" — especially with 13 Pros being misclassified as Starters and 11 Starters as Pros. 
+
+* This hints that those two groups might be harder to separate based on the features we used.
+
+<h4>Analysing metrics</h4>
+
+In this chunk, we calculated class-specific performance metrics from the confusion matrix using **`conf_mat$byClass`**. 
+
+After converting the results into a dataframe and extracting the class labels, we calculated Balanced Accuracy for each class manually using the average of Sensitivity and Specificity. 
+
+We then selected the most relevant columns (**`Class`**, **`Sensitivity`**, **`Specificity`**, **`Balanced Accuracy`**) and rounded the numeric values to three decimals. 
+```{r class-wise-metrics, echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+
+by_class <- as.data.frame(conf_mat$byClass)
+by_class$Class <- rownames(conf_mat$byClass)
+rownames(by_class) <- NULL
+
+by_class$Balanced.Accuracy <- round((by_class$Sensitivity + by_class$Specificity) / 2, 3)
+
+class_metrics <- by_class %>%
+  dplyr::select(Class, Sensitivity, Specificity, Balanced.Accuracy) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(class_metrics, caption = "Class-wise Performance Metrics") %>%
+  kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  )
+```
+**Interpretation**
+
+* The table summarizes how well the model performed in predicting each salary class. 
+* Rookie had the highest Balanced Accuracy (0.930), meaning it was the most accurately and consistently predicted class. 
+* MVP also showed strong performance (0.875), while the model struggled more with the "Pro" class, which had the lowest Balanced Accuracy (0.741). 
+* This tells us that some salary levels are more distinguishable than others based on the predictors used.
+
+```{r backup-model-data, echo=TRUE, message=FALSE, warning=FALSE}
+model_data_full <- model_data
+```
+
+<h4>Stepwise model selection using AIC</h4>
+
+In this code, we applied *stepwise model selection using AIC* (Akaike Information Criterion) to find a more parsimonious version of our multinomial logistic regression model. 
+
+We started with a full model (**`full_model_step`**) that included all predictors in model_data_full, and then used **`stepAIC()`** with **`direction = "both"`** to allow both forward selection and backward elimination. 
+
+This means variables could be added or removed iteratively based on which changes improved the AIC the most.
+
+```{r stepwise-selection-model, echo=TRUE, message=FALSE, warning=FALSE}
+library(MASS)
+library(nnet)
+
+full_model_step <- multinom(SalaryLevel ~ ., data = model_data_full, trace = FALSE)
+
+stepwise_model <- stepAIC(full_model_step, direction = "both", trace = FALSE)
+
+summary(stepwise_model)
+```
+**Interpretation**
+
+* The goal of this step was to identify a simpler model that still captures the important relationships between predictors and salary level, while avoiding overfitting. 
+
+* The summary output shows that variables like **`AtBat`**, **`RBI`**, **`Walks`**, **`Years`**, **`CHits`**, and **`PutOuts`** were retained in the reduced model. These were likely the most informative predictors in distinguishing between salary levels like Rookie, Starter, Pro, and MVP.
+
+* Looking at the AIC value (359.24) and the residual deviance (317.24), this model fits the data reasonably well with fewer predictors than the full model. Overall, this step helped us reduce model complexity while maintaining strong explanatory power.
+
+<h4>Evaluating the reduced model</h4>
+
+In this section, we’re evaluating the performance of our reduced multinomial logistic regression model—a simpler model derived through stepwise AIC selection. We're applying Leave-One-Out Cross-Validation (LOOCV) to this reduced model to ensure a fair and consistent comparison with the full model.
+
+```{r stepwise-loo-model, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(nnet)
+
+set.seed(6102004)
+
+ctrl_loo <- trainControl(method = "LOOCV")
+
+reduced_model <- train(
+  formula(stepwise_model),
+  data = model_data_full,
+  method = "multinom",
+  trControl = ctrl_loo,
+  trace = FALSE
+)
+print(reduced_model)
+```
+**Interpretation**
+
+* The reduced model used only 6 predictors and still performed decently, achieving an *accuracy of ~0.668* and a *Cohen's Kappa of ~0.556*. 
+
+* These metrics are slightly lower than those of the full model (which had an accuracy of ~0.752), indicating that while the reduced model is simpler and easier to interpret, it sacrifices a bit of predictive power. 
+
+* However, the drop is not massive, which means the stepwise selection successfully removed less informative variables while retaining much of the model’s strength.
+
+In this block, we’re evaluating the prediction performance of the stepwise-selected multinomial model. 
+
+We generate predictions on the full dataset using the reduced model, compute the confusion matrix comparing predicted vs actual salary levels, and format it nicely with kableExtra for display. 
+
+The goal is to assess how well the reduced model classifies players across the four salary categories (Rookie, Starter, Pro, MVP).
+
+```{r stepwise-confusion-matrix, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(knitr)
+library(kableExtra)
+
+stepwise_preds <- predict(stepwise_model, newdata = model_data_full)
+
+conf_mat_stepwise <- confusionMatrix(stepwise_preds, model_data_full$SalaryLevel)
+
+conf_df <- as.data.frame(conf_mat_stepwise$table)
+
+conf_wide <- tidyr::pivot_wider(conf_df,
+                                names_from = Reference,
+                                values_from = Freq)
+
+kable(conf_wide, caption = "Confusion Matrix: Stepwise Model (Predicted vs Actual Salary Levels)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE,
+                position = "center")
+```
+**Interpretation**
+
+* The confusion matrix shows strong performance for predicting *Rookies* and *Starters*, with 54 and 41 correctly classified, respectively. 
+
+* However, there's more confusion between Pro and MVP levels—especially MVPs being predicted as Pro (14 cases). This suggests the reduced model struggles to differentiate between higher-tier salary categories, possibly due to overlapping features or limited class separation in the data.
+
+<h4>Comparing the reduced model and the full one</h4>
+
+In this section, we compared the performance of the full and reduced multinomial logistic regression models by extracting their respective accuracy and Cohen’s Kappa scores from their confusion matrices. 
+
+These values were then stored in a data frame and displayed in a clean table format for easy comparison.
+
+```{r compare-accuracy-kappa, echo=TRUE, message=FALSE, warning=FALSE}
+full_acc <- round(conf_mat$overall["Accuracy"], 4)
+full_kappa <- round(conf_mat$overall["Kappa"], 4)
+
+reduced_acc <- round(conf_mat_stepwise$overall["Accuracy"], 4)
+reduced_kappa <- round(conf_mat_stepwise$overall["Kappa"], 4)
+
+acc_kappa_df <- data.frame(
+  Model = c("Full Model", "Reduced Model"),
+  Accuracy = c(full_acc, reduced_acc),
+  Kappa = c(full_kappa, reduced_kappa)
+)
+
+library(knitr)
+library(kableExtra)
+
+kable(acc_kappa_df, caption = "Accuracy & Kappa: Full vs Reduced Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE,
+                position = "center")
+```
+**Interpretation**
+
+* The full model achieved slightly higher accuracy (0.7521) and Kappa (0.6692) compared to the reduced model (accuracy = 0.7269, Kappa = 0.6354). 
+
+* While the difference is modest, this suggests that the additional predictors in the full model do slightly improve classification performance. 
+
+* However, given the reduced model’s simplicity and comparable results, it may still be preferred when interpretability and efficiency are important.
+
+In this step, we compared the confusion matrices of the full and reduced models side by side using a heatmap visualization. The matrices were converted into data frames and labeled accordingly, then merged into one dataset for plotting.
+
+```{r compare-confusion-matrices, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+
+conf_full_df <- as.data.frame(conf_mat$table)
+conf_reduced_df <- as.data.frame(conf_mat_stepwise$table)
+conf_full_df$Model <- "Full"
+conf_reduced_df$Model <- "Reduced"
+
+conf_all <- rbind(conf_full_df, conf_reduced_df)
+
+ggplot(conf_all, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white", width = 0.9, height = 0.9) +
+  geom_text(aes(label = Freq), color = "black", size = 5) +
+  scale_fill_gradient(low = "#ffb3d9", high = "#660066") +  #
+  facet_wrap(~Model, nrow = 1) +  
+  labs(
+    title = "Confusion Matrices: Full vs Reduced Model",
+    x = "Actual", y = "Predicted"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 14),
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 13)
+  )
+```
+
+**Interpretation**
+
+* From the heatmap, we can clearly observe that the full model yields more accurate predictions, especially for the 'MVP' and 'Pro' salary levels. 
+* The reduced model, despite using fewer predictors, shows a noticeable drop in classification performance—evident in higher misclassification rates for the 'MVP' class. 
+* This visual comparison supports our earlier findings: reducing the number of predictors may simplify the model but comes at the cost of predictive power.
+
+<h3>Vanilla validation method</h3>
+
+The *vanilla validation method* refers to a simple train-test split, where the dataset is divided into two parts: one for training the model and the other for testing its performance. In our case, we used the **`caTools`** package to randomly split the data so that 80% is used for training (**`train_data`**) and the remaining 20% for testing (**`test_data`**). The split is stratified based on the target variable **`SalaryLevel`** to preserve class proportions across the sets.
+
+We chose this approach because it's a straightforward and computationally light way to evaluate model performance, especially when dealing with reasonably sized datasets. This method allows us to simulate real-world prediction tasks by training on one portion of the data and testing on unseen data to assess generalization accuracy.
+
+```{r vanilla-split, echo=TRUE, message=FALSE, warning=FALSE}
+library(caTools)
+
+set.seed(6102004)
+
+split <- sample.split(model_data_full$SalaryLevel, SplitRatio = 0.8)
+
+train_data <- subset(model_data_full, split == TRUE)
+test_data <- subset(model_data_full, split == FALSE)
+```
+
+<h4>Training on the training set with the vanilla validation method</h4>
+
+We are continuing our *vanilla modeling process*, where we apply a *multinomial logistic regression* to the training data (which was previously split using the vanilla 80/20 split). This code block trains the model on the **`train_data`** and displays the model summary, which includes coefficient estimates, standard errors, residual deviance, and AIC.
+
+```{r vanilla-train-model, echo=TRUE, message=FALSE, warning=FALSE}
+library(nnet)
+
+vanilla_model <- multinom(SalaryLevel ~ ., data = train_data, trace = FALSE)
+summary(vanilla_model)
+```
+**Interpretation**
+
+* The output shows how each predictor influences the odds of being classified in a higher salary category relative to the baseline (Rookie).
+
+* For example, players with more **`CHits`**, **`RBI`**, and **`Walks`** are associated with higher probability of being in the MVP category, indicated by large positive coefficients.
+
+* The AIC value (302.96) and Residual Deviance (224.96) give us a sense of model fit — these can later be compared to the LOO and stepwise models.
+
+<h4>Testing with the vanilla validation method</h4>
+
+In this chunk, we’re testing the vanilla multinomial regression model on the test data to evaluate its performance. The code uses the trained **`vanilla_model`** to generate predictions for the test set (**`vanilla_preds`**) and then compares these predictions with the actual salary levels using a confusion matrix (**`vanilla_conf_mat`**). 
+
+This helps us assess how well the model generalizes to unseen data, which is essential for understanding its real-world predictive ability.
+
+```{r vanilla-evaluate, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+
+vanilla_preds <- predict(vanilla_model, newdata = test_data)
+
+vanilla_conf_mat <- confusionMatrix(vanilla_preds, test_data$SalaryLevel)
+```
+
+
+This code extracts and prints the accuracy and Cohen’s Kappa score from the vanilla model’s confusion matrix. It rounds both metrics to four decimal places for readability, then outputs them using the **`cat()`** function. These two metrics are crucial for evaluating the model’s overall classification performance and agreement beyond chance.
+
+```{r vanilla-metrics, echo=TRUE, message=FALSE, warning=FALSE}
+acc_vanilla <- round(vanilla_conf_mat$overall["Accuracy"], 4)
+kappa_vanilla <- round(vanilla_conf_mat$overall["Kappa"], 4)
+
+cat("**Vanilla Accuracy:**", acc_vanilla, "\n")
+cat("**Vanilla Cohen’s Kappa:**", kappa_vanilla, "\n")
+```
+**Interpretation**
+
+* The vanilla model achieved an accuracy of *0.6458*, meaning it correctly predicted the salary level around 65% of the time on the test data. 
+* The *Cohen’s Kappa* value of 0.5275 indicates moderate agreement between predicted and actual classes beyond chance, but this performance is noticeably lower than the full model's metrics, confirming that the vanilla model doesn’t generalize as well.
+
+In this chunk, we’re visualizing the performance of our vanilla (simple train/test split) model using a confusion matrix. 
+
+```{r vanilla-confusion, echo=TRUE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+
+vanilla_table <- as.data.frame(vanilla_conf_mat$table)
+vanilla_table_wide <- tidyr::pivot_wider(vanilla_table, names_from = Reference, values_from = Freq)
+
+kable(vanilla_table_wide, caption = "Vanilla Validation: Confusion Matrix") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* The confusion matrix reveals how well the vanilla model performed on the test set. Most classes are somewhat accurately predicted, especially "Rookie" (10 correct out of 13), but we observe notable misclassifications particularly for "Starter" and "Pro". 
+
+* For example, "Pro" predictions were frequently confused with "MVP" and "Starter", indicating the model struggles with finer distinctions among higher salary levels. 
+
+* This shows that while the vanilla model captures general patterns, its predictive accuracy still leaves room for improvement.
+
+<h4>Comparing between the metrics</h4>
+
+In this part, we are creating a final visual comparison of the model performance metrics—*Accurac*y and *Cohen’s Kappa*—across three different models: Full LOO-CV, Reduced LOO-CV, and Vanilla validation. 
+We first build a data frame that stores the metric values for each model. Then, we reshape it into long format using **`pivot_longer()`** so it’s easier to plot with **`ggplot2`**. 
+
+The bar chart is constructed to display both Accuracy and Kappa side by side for each model. This allows us to directly visualize how model performance varies depending on the validation strategy and model complexity.
+
+
+```{r compare-acc-kappa, echo=TRUE, message=FALSE, warning=FALSE}
+compare_df <- data.frame(
+  Model = c("Full LOO-CV", "Reduced LOO-CV", "Vanilla"),
+  Accuracy = c(0.6597, 0.6681, 0.6458),
+  Kappa = c(0.5456, 0.5564, 0.5275)
+)
+
+library(ggplot2)
+
+library(tidyr)
+compare_long <- pivot_longer(compare_df, cols = c("Accuracy", "Kappa"))
+
+ggplot(compare_long, aes(x = Model, y = value, fill = name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Model Comparison: Accuracy and Kappa",
+       y = "Metric Value", x = "", fill = "Metric") +
+  theme_minimal()
+```
+
+**Interpretation**
+
+* The bar plot clearly shows that the *Full model using LOO-CV* performs the best, achieving the highest values for both Accuracy (~0.66) and Kappa (~0.55). 
+
+* The *Reduced model*, while slightly more efficient with fewer predictors, performs just a bit worse, suggesting that trimming variables comes at a small cost to performance. 
+
+* *The Vanilla model*, which uses a simple 80/20 train-test split, shows the lowest metrics, especially for Kappa, indicating less consistent predictions across classes. 
+
+* Overall, this comparison supports that more rigorous validation (LOO-CV) and including informative predictors improves model reliability.
+
+```{r reduced-confusion, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+
+reduced_preds <- predict(stepwise_model, newdata = model_data_full)
+
+conf_mat_reduced <- confusionMatrix(reduced_preds, model_data_full$SalaryLevel)
+```
+
+In this section, we combine the confusion matrices from all three models—Full, Reduced (stepwise), and Vanilla—into a single dataset for visual comparison. Each matrix is first transformed into a data frame, and a new column called Model is added to distinguish them.
+
+```{r confusion-matrix-comparison, fig.width=12, fig.height=5, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+full_cm_df <- as.data.frame(conf_mat$table) %>% mutate(Model = "Full")
+reduced_cm_df <- as.data.frame(conf_mat_reduced$table) %>% mutate(Model = "Reduced")
+vanilla_cm_df <- as.data.frame(vanilla_conf_mat$table) %>% mutate(Model = "Vanilla")
+
+combined_cm <- bind_rows(full_cm_df, reduced_cm_df, vanilla_cm_df)
+
+ggplot(combined_cm, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "black", size = 3) +
+  facet_wrap(~Model, ncol = 3) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrices: Full vs Reduced vs Vanilla", fill = "Freq") +
+  theme_minimal()
+```
+
+**Interpretation**
+
+* The visualization makes it clear that the *Full model* consistently performs better across all salary levels, showing higher and more concentrated diagonal values (correct predictions). 
+
+* *The Reduced model*, while still effective, shows a slight drop in classification performance, especially for the MVP class. 
+
+* *The Vanilla model* performs the worst, particularly struggling with predicting Pro and MVP levels, with more scattered off-diagonal values. 
+
+* Overall, this comparison visually confirms that reducing predictors or using simple validation (like vanilla split) can lead to diminished predictive accuracy and class discrimination power.
+
+
+<h2>Rain Forest</h2>
+
+We are choosing the Random Forest model because it offers a strong balance between predictive power and interpretability, especially in complex multiclass classification problems like ours. While logistic regression models (full, reduced, and vanilla) give us useful baseline insights and allow for variable significance testing, they rely on linear boundaries and can underperform when relationships between predictors and the target are non-linear or involve interactions. In contrast, Random Forest can capture these non-linearities and interactions naturally, without requiring extensive feature engineering.
+
+Moreover, Random Forest is an ensemble method that builds multiple decision trees and averages their results, reducing variance and improving generalization—making it more robust to overfitting than single-tree models. It also provides useful variable importance metrics, helping us understand which features contribute most to predictions. Given our goal of accurately classifying players into salary levels based on a variety of performance metrics, Random Forest gives us a powerful, flexible, and relatively interpretable tool to boost classification performance beyond what standard regression models can offer.
+
+<h3>Training with Random Forest</h3>
+
+In this section, we trained a Random Forest classifier using the full training dataset (**`train_data`**) to predict the categorical SalaryLevel variable. 
+
+The model was trained with 500 trees and 3 predictors tried at each split (a default setting for classification tasks).
+
+```{r rf-train, echo=TRUE, message=FALSE, warning=FALSE}
+library(randomForest)
+
+rf_model <- randomForest(SalaryLevel ~ ., data = train_data, importance = TRUE)
+
+print(rf_model)
+```
+**Interpretation**
+
+* The OOB estimate of error rate is 34.21%, which means the model misclassifies around one-third of the observations on average when evaluated internally during training. 
+
+* The confusion matrix shows that Rookie is the best predicted class with the lowest class error (around 14.6%), while Pro has the highest error rate at 50%, suggesting difficulty distinguishing Pro players.
+
+* The performance varies significantly across categories, which may indicate class imbalance or overlapping feature profiles. Despite its complexity, the Random Forest doesn't drastically outperform simpler models here, but it still gives a different and potentially more generalizable perspective.
+
+```{r rf-evaluate, echo=TRUE, message=FALSE, warning=FALSE}
+rf_preds <- predict(rf_model, newdata = test_data)
+
+
+library(caret)
+rf_conf_mat <- confusionMatrix(rf_preds, test_data$SalaryLevel)
+```
+
+This part extracts the accuracy and Cohen’s Kappa score from the confusion matrix of the trained Random Forest model and prints them in a readable format.
+
+```{r rf-metrics, echo=TRUE, message=FALSE, warning=FALSE}
+acc_rf <- round(rf_conf_mat$overall["Accuracy"], 4)
+kappa_rf <- round(rf_conf_mat$overall["Kappa"], 4)
+
+cat("**Random Forest Accuracy:**", acc_rf, "\n")
+cat("**Random Forest Cohen’s Kappa:**", kappa_rf, "\n")
+```
+**Interpretation**
+
+* The Random Forest model achieved an accuracy of 0.6875 and a Cohen’s Kappa of 0.5831, which indicates a fairly strong level of predictive power and moderate agreement. However, it still performs slightly below the full multinomial model and suggests room for improvement.
+
+```{r rf-confusion-not-tuned, echo=TRUE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+
+rf_table_not_tuned <- as.data.frame(rf_conf_mat$table)
+rf_table_wide <- tidyr::pivot_wider(rf_table_not_tuned, names_from = Reference, values_from = Freq)
+
+kable(rf_table_wide, caption = "Random Forest: Confusion Matrix") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* The confusion matrix for the Random Forest model shows solid overall performance, especially for the Rookie and MVP classes. Out of 15 Rookies, 11 were correctly classified, with only 4 misclassified as Starters. 
+
+* The MVP class had 8 correct predictions out of 11, with 3 being misclassified as Pro, suggesting some overlap between high-performing players. The Starter class shows decent accuracy with 7 correct out of 10, though a few are misclassified as Pro. 
+
+* The Pro class is the most challenging, with only 7 correct out of 12 and noticeable confusion with MVP. Overall, the model handles the extreme salary levels well but has some difficulty distinguishing between mid-range categories like Starter and Pro.
+
+```{r rf-class-wise-metrics-not-tuned, echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+rf_by_class_not_tuned <- as.data.frame(rf_conf_mat$byClass)
+rf_by_class_not_tuned$Class <- rownames(rf_conf_mat$byClass)
+rownames(rf_by_class_not_tuned) <- NULL
+
+rf_by_class_not_tuned$Class <- gsub("Class: ", "", rf_by_class_not_tuned$Class)
+
+rf_by_class_not_tuned$Balanced.Accuracy <- round((rf_by_class_not_tuned$Sensitivity + rf_by_class_not_tuned$Specificity) / 2, 3)
+
+rf_class_metrics_not_tuned <- rf_by_class_not_tuned %>%
+  dplyr::select(Class, Sensitivity, Specificity, Balanced.Accuracy) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(rf_class_metrics_not_tuned, caption = "Random Forest: Class-wise Performance Metrics") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* The class-wise performance metrics for the Random Forest model confirm what we observed in the confusion matrix. The model performs best on the Rookie class, with a high sensitivity (0.917) and balanced accuracy (0.903), meaning it correctly identifies most Rookies while rarely confusing them with other classes. 
+
+* MVP also shows strong results, with a balanced accuracy of 0.823. However, the model struggles more with the Starter and especially the Pro classes, which have lower sensitivities (0.583 and 0.538, respectively), indicating that many true Starters and Pros are being misclassified. 
+
+* These mid-range categories are likely harder to distinguish due to overlapping performance metrics, highlighting a limitation of the model in separating similar salary levels.
+
+<h4>Hyperparameter Tuning on RF</h4>
+
+We are performing hyperparameter tuning on the Random Forest model to improve its predictive performance and generalization. 
+
+By using 10-fold cross-validation (**`cv`**) with **`tuneLength = 10`**, we let the model try different values of **`mtry`** (number of variables considered at each split) and choose the one that results in the best accuracy. 
+
+This helps reduce overfitting and ensures that the model performs well not just on the training data but also on unseen data. The code accomplishes this using the **`caret`** package’s **`train()`** function, specifying the tuning process through **`trainControl()`** and enabling feature importance output.
+
+```{r rf-tuned, message=FALSE, warning=FALSE}
+library(caret)
+
+set.seed(123)
+rf_tuned <- train(SalaryLevel ~ ., 
+                  data = train_data,
+                  method = "rf",
+                  trControl = trainControl(method = "cv", number = 10),
+                  tuneLength = 10,
+                  importance = TRUE)
+
+```
+
+```{r best-tune, message=FALSE, warning=FALSE}
+rf_tuned$bestTune
+```
+**Interpretation**
+
+* The output shows that the best **`mtry`** value found through cross-validation is 2, meaning the optimal number of predictors to consider at each split in the Random Forest model is 2. 
+
+* This value likely provided the best balance between bias and variance during training, leading to the most accurate model performance out of all the tested configurations. Choosing a smaller **`mtry`** often results in more diverse trees, which can help the ensemble generalize better.
+
+```{r plot-rf-tunes, message=FALSE, warning=FALSE}
+plot(rf_tuned)
+```
+
+**Interpretation**
+
+* The plot shows the cross-validated accuracy of the Random Forest model across different values of **`mtry`**, which is the number of predictors randomly selected at each split. 
+
+* Accuracy peaks when **`mtry = 2`**, confirming the earlier result that this value is optimal. As **`mtry`** increases beyond 2, the accuracy gradually decreases, indicating that using more predictors per split can introduce redundancy and reduce model performance. This reinforces the benefit of smaller **`mtry`** values in promoting tree diversity and improving generalization.
+
+In this code, we are evaluating the performance of the tuned Random Forest model on the test data. First, predictions (**`rf_tuned_preds`**) are generated using the **`predict()`** function. Then, we assess how well the model performed by comparing these predictions to the actual salary levels in the test set using a confusion matrix.
+
+```{r predict-rftuned, message=FALSE, warning=FALSE}
+rf_tuned_preds <- predict(rf_tuned, newdata = test_data)
+```
+
+```{r confusion-matrix-rftuned, message=FALSE, warning=FALSE}
+
+conf_mat_rf_tuned <- confusionMatrix(rf_tuned_preds, test_data$SalaryLevel, mode = "everything")
+```
+
+<h4>Comparin the Tuned and simple version of Random Forest</h4>
+
+In this code, we are comparing the class-wise performance metrics of the untuned and tuned Random Forest models. 
+
+We extract sensitivity, specificity, and balanced accuracy for each salary class from the respective confusion matrices. 
+
+These values are cleaned and labeled to reflect the model they come from. The shared columns between both models are then selected and the results are combined into a single dataframe. 
+
+Finally, the metrics are neatly displayed using a formatted table to assess how tuning the Random Forest impacted performance at the class level.
+
+```{r compare-rftuned-rf, message=FALSE, warning=FALSE}
+
+rf_class_metrics <- as.data.frame(rf_conf_mat$byClass)
+rf_class_metrics$Class <- gsub("Class: ", "", rownames(rf_class_metrics))
+rf_class_metrics$Model <- "RF Untuned"
+
+rf_tuned_class_metrics <- as.data.frame(conf_mat_rf_tuned$byClass)
+rf_tuned_class_metrics$Class <- gsub("Class: ", "", rownames(rf_tuned_class_metrics))
+rf_tuned_class_metrics$Model <- "RF Tuned"
+
+colnames(rf_class_metrics)[colnames(rf_class_metrics) == "Balanced Accuracy"] <- "Balanced Accuracy"
+colnames(rf_tuned_class_metrics)[colnames(rf_tuned_class_metrics) == "Balanced Accuracy"] <- "Balanced Accuracy"
+
+cols_to_use <- intersect(
+  c("Model", "Class", "Sensitivity", "Specificity", "Balanced Accuracy"),
+  intersect(colnames(rf_class_metrics), colnames(rf_tuned_class_metrics))
+)
+
+rf_class_metrics <- rf_class_metrics[, cols_to_use]
+rf_tuned_class_metrics <- rf_tuned_class_metrics[, cols_to_use]
+rf_comparison <- rbind(rf_class_metrics, rf_tuned_class_metrics)
+
+kable(rf_comparison, caption = "Class-wise Performance: RF Untuned vs RF Tuned") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* From the output, we observe that tuning the Random Forest model generally improved class-wise performance, especially for the "Pro" and "MVP" categories. 
+
+* For instance, the sensitivity of the "Pro" class increased from 0.538 to 0.692, and "MVP" rose from 0.727 to 0.818. Balanced accuracy for all classes also saw improvements, with the "MVP" class reaching an impressive 0.88. 
+
+* These improvements suggest that tuning enhanced the model’s ability to correctly identify less frequent or more complex classes, boosting its overall robustness.
+
+
+In this code chunk, we are displaying the confusion matrix for the tuned Random Forest model using **`kable`**. 
+
+This format allows us to easily see where the model made correct or incorrect predictions. The styled output table is then rendered using the **`kableExtra`** package for better visual presentation.
+
+```{r rf-confusion, echo=TRUE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+
+rf_table <- as.data.frame(conf_mat_rf_tuned$table)
+rf_table_wide <- tidyr::pivot_wider(rf_table, names_from = Reference, values_from = Freq)
+
+kable(rf_table_wide, caption = "Random Forest Tuned: Confusion Matrix") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* The resulting confusion matrix for the tuned Random Forest model shows that most predictions fall along the diagonal, indicating correct classifications. 
+
+* For instance, all 9 MVP players and 11 out of 15 Rookies were correctly predicted. There are a few misclassifications, like 4 Rookies predicted as Starters and some Pro players being mistaken for MVPs or Starters. 
+
+* However, overall, the tuned model seems to perform fairly well across classes, especially in correctly identifying MVPs and Rookies.
+
+In this section, we aim to extract and summarize the class-wise performance metrics from the tuned Random Forest model. 
+
+Specifically, we gather values for Sensitivity, Specificity, and Balanced Accuracy for each salary class, round them for clarity, and organize the results into a readable table format.
+
+```{r rf-class-wise-metrics, echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+rf_by_class <- as.data.frame(conf_mat_rf_tuned$byClass)
+rf_by_class$Class <- rownames(conf_mat_rf_tuned$byClass)
+rownames(rf_by_class) <- NULL
+
+rf_by_class$Class <- gsub("Class: ", "", rf_by_class$Class)
+
+rf_by_class$Balanced.Accuracy <- round((rf_by_class$Sensitivity + rf_by_class$Specificity) / 2, 3)
+
+rf_class_metrics <- rf_by_class %>%
+  dplyr::select(Class, Sensitivity, Specificity, Balanced.Accuracy) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(rf_class_metrics, caption = "Random Forest Tuned: Class-wise Performance Metrics") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* From the results, we observe that the tuned Random Forest model performs exceptionally well on the "Rookie" and "MVP" classes, with balanced accuracy values of 0.903 and 0.882, respectively. 
+
+* The "Starter" class has the lowest balanced accuracy at 0.764, indicating more difficulty in correctly identifying instances in that category. 
+
+* Overall, this detailed class-wise evaluation confirms that tuning has improved the model's performance, especially for the more complex classes like "Pro" and "MVP".
+
+<h4>Comparing all models' metrics</h4>
+```{r rf-confusion-matrix-prepare, echo=TRUE, message=FALSE, warning=FALSE}
+rf_cm_df <- as.data.frame(rf_conf_mat$table) %>%
+  mutate(Model = "Random Forest")
+```
+
+
+```{r cm-combined-all-models, echo=TRUE, message=FALSE, warning=FALSE}
+combined_cm <- bind_rows(full_cm_df, reduced_cm_df, vanilla_cm_df, rf_cm_df)
+```
+
+```{r cm-comparison-heatmap-all, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+
+ggplot(combined_cm, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "black") +
+  facet_wrap(~ Model) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrices: All Models Compared",
+       fill = "Frequency") +
+  theme_minimal()
+```
+
+**Interpretation**
+
+* The comparison of confusion matrices across all models reveals key insights into their relative performance. 
+
+* The Full and Reduced models demonstrate strong predictive power, especially for the "Pro" and "MVP" classes, though they tend to over-predict MVPs, likely due to feature correlations. 
+
+* The Vanilla model struggles significantly, with many misclassifications and low correct counts across all classes—especially "Pro" and "MVP", where predictions are highly scattered. 
+
+* In contrast, the Random Forest model shows a more balanced distribution, particularly for the "Rookie" and "Starter" classes, and captures the MVPs better than Vanilla. Notably, Random Forest reduces confusion between "Pro" and "Starter", a common issue in other models. 
+* Overall, the confusion matrix comparison suggests that Random Forest, especially when tuned, enhances class-level precision, while Vanilla underperforms due to its simpler structure.
+
+<h2>KNN</h2>
+
+We chose to include K-Nearest Neighbors (KNN) in our model comparison because it’s a simple, intuitive, and non-parametric method that classifies observations based on the majority class among the closest training examples. 
+
+Unlike models that assume linear relationships (like logistic regression), KNN captures local patterns in the data, which can be especially useful in a multi-class setting like ours. It also helps us evaluate how well a distance-based approach performs compared to more complex ensemble models like Random Forest, offering valuable contrast in terms of both methodology and outcomes.
+
+This code prepares for KNN modeling using the **`caret`** package. We set a random seed for reproducibility and configure 10-fold cross-validation to evaluate model performance. The settings are stored in **`knn_ctrl`** for later use.
+
+```{r setup-for-knn, message=FALSE, warning=FALSE}
+library(caret)
+
+set.seed(123)
+knn_ctrl <- trainControl(method = "cv", number = 10)
+```
+
+Here we train our KNN model to predict salary levels (**`SalaryLevel`**) using all the other variables in our training data. We're using the settings we made earlier for 10-fold cross-validation (**`knn_ctrl`**). The **`tuneLength = 10`** part means the model will automatically try 10 different values for k (the number of neighbors) to find which works best. The trained model gets saved as **`knn_model`** so we can check how well it performs later.
+
+```{r model-training, message=FALSE, warning=FALSE}
+knn_model <- train(SalaryLevel ~ .,
+                   data = train_data,
+                   method = "knn",
+                   trControl = knn_ctrl,
+                   tuneLength = 10)  
+```
+
+```{r best-k, message=FALSE, warning=FALSE}
+knn_model$bestTune
+```
+**Interpretation**
+
+* The output shows that our KNN model chose k=23 neighbors as the best option after testing different values. This means when making predictions, the model looks at the 23 most similar data points in our training set to decide what salary level to predict.
+
+* A k-value of 23 suggests our data might be pretty complex - it needs to consider quite a few neighbors to make good predictions rather than just looking at the very closest ones.
+
+```{r plot-knn, message=FALSE, warning=FALSE}
+plot(knn_model)
+```
+
+**Interpretation**
+
+The graph shows how the model's accuracy changes as we use different numbers of neighbors (k). When k=5, accuracy is around 62%, which is the highest. As we increase k, accuracy drops—down to about 57% at k=20.
+
+What this means:
+
+  * Best k-value: The sweet spot seems to be k=23, since accuracy is highest there.
+
+  * Performance: Even the best accuracy (62%) isn’t amazing—it’s slightly better than random guessing (which would be ~50% for two classes).
+  
+  
+Here we are making predictions on the salary level using KNN on the test data.
+```{r message=FALSE, warning=FALSE}
+knn_preds <- predict(knn_model, newdata = test_data)
+```
+
+Here we are creating a confusion matrix with all the metrics of KNN's performance.
+```{r message=FALSE, warning=FALSE}
+conf_mat_knn <- confusionMatrix(knn_preds, test_data$SalaryLevel, mode = "everything")
+```
+
+Here we’re summarizing how the KNN model performed for each salary class by calculating sensitivity, specificity, and balanced accuracy. This helps us see how well the model is able to correctly identify each class, not just its overall accuracy. 
+```{r class-metrics-knn, message=FALSE, warning=FALSE}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+knn_by_class <- as.data.frame(conf_mat_knn$byClass)
+knn_by_class$Class <- rownames(conf_mat_knn$byClass)
+rownames(knn_by_class) <- NULL
+
+knn_by_class$Class <- gsub("Class: ", "", knn_by_class$Class)
+
+knn_by_class$Balanced.Accuracy <- round((knn_by_class$Sensitivity +
+                                       knn_by_class$Specificity) / 2, 3)
+
+knn_class_metrics <- knn_by_class %>%  
+    dplyr::select(Class, Sensitivity, Specificity, Balanced.Accuracy) %>%  
+    mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(knn_class_metrics, caption = "KNN: Class-wise Performance Metrics") %>%  
+    kable_styling(full_width = FALSE, 
+                bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* The class-wise performance results for the KNN model show that it performs best at identifying "Rookie" players, with a high balanced accuracy of 0.861. 
+
+* However, it struggles significantly with the "Starter" and "Pro" categories, both of which have balanced accuracies below 0.57, indicating poor classification reliability for those groups. 
+
+* The "MVP" class performs slightly better, but still falls behind the performance seen in Random Forest or logistic models. 
+
+* Overall, KNN appears to be less effective for this dataset, especially for distinguishing between middle-range salary levels where players may have more overlapping characteristics.
+
+Here we are displaying the confusion matrix for KNN in a clean format so we can easily see how many observations were correctly or incorrectly predicted for each salary level.
+```{r confusion-knn, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+library(tidyr)
+
+knn_table <- as.data.frame(conf_mat_knn$table)
+knn_table_wide <- pivot_wider(knn_table, 
+                            names_from = Reference, 
+                            values_from = Freq)
+
+kable(knn_table_wide, caption = "KNN: Confusion Matrix") %>%
+    kable_styling(full_width = FALSE, 
+                bootstrap_options = c("striped", "hover", "condensed"))
+```
+**Interpretation**
+
+* The confusion matrix shows that KNN performs quite well when predicting "Rookie" players, correctly classifying 10 out of 14. 
+
+* However, the model struggles with the other classes. "Starter" is often confused with "Pro", and "Pro" predictions are widely spread across all other categories, with only 6 correct out of 18. The "MVP" class also sees considerable confusion, especially with "Pro", where 3 MVPs were misclassified.
+
+* In general, the KNN model lacks consistency in distinguishing between mid to high salary levels, suggesting it may not be the best fit for the structure and complexity of this dataset.
+
+In this code chunk, we are building a combined table to compare the class-wise performance of three models: the tuned Random Forest, untuned Random Forest, and k-NN. For each model, we collect the key performance metrics — Sensitivity, Specificity, and Balanced Accuracy — and label them with the corresponding model name. These tables are then merged into one, which is printed using a styled table to visualize and directly compare how well each model performs across different salary classes.
+
+```{r comparing-knn, message=FALSE, warning=FALSE}
+library(dplyr)
+library(kableExtra)
+
+rf_class_metrics$Model <- "RF Tuned"
+rf_class_metrics_not_tuned$Model <- "RF Untuned"
+knn_class_metrics$Model <- "k-NN"
+
+colnames(rf_class_metrics)[colnames(rf_class_metrics) == "Balanced.Accuracy"] <- "Balanced Accuracy"
+colnames(rf_class_metrics_not_tuned)[colnames(rf_class_metrics_not_tuned) == "Balanced.Accuracy"] <- "Balanced Accuracy"
+colnames(knn_class_metrics)[colnames(knn_class_metrics) == "Balanced.Accuracy"] <- "Balanced Accuracy"
+
+cols_to_use <- c("Model", "Class", "Sensitivity", "Specificity", "Balanced Accuracy")
+
+model_comparison <- bind_rows(
+  rf_class_metrics[, cols_to_use],
+  rf_class_metrics_not_tuned[, cols_to_use],
+  knn_class_metrics[, cols_to_use]
+)
+
+kable(model_comparison, caption = "Class-wise Performance Comparison: RF Tuned vs RF Untuned vs k-NN") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+
+```
+
+**Interpretation**
+
+* From the results, we can see that the tuned and untuned Random Forest models have nearly identical metrics, suggesting tuning had minimal impact in this case. 
+* Both perform best on the Rookie and MVP classes, with balanced accuracies above 0.9 and 0.82 respectively. On the other hand, k-NN struggles more: it has noticeably lower sensitivity across all classes (especially for Starter and Pro), resulting in the lowest balanced accuracies for those two. 
+* This highlights that while Random Forest (both versions) generalizes better and is more robust across all classes, k-NN underperforms in comparison, particularly in detecting non-Rookie players.
+
+In this section, we are collecting and comparing the overall performance metrics—Accuracy and Cohen’s Kappa—for three different models: Random Forest Tuned, Random Forest Untuned, and k-Nearest Neighbors (k-NN). The values are extracted from each model’s confusion matrix and organized into a single summary table for easy comparison.
+
+```{r message=FALSE, warning=FALSE}
+
+overall_metrics <- data.frame(
+  Model = c("RF Tuned", "RF Untuned", "k-NN"),
+  Accuracy = c(
+    round(conf_mat_rf_tuned$overall["Accuracy"], 4),
+    round(rf_conf_mat$overall["Accuracy"], 4),
+    round(conf_mat_knn$overall["Accuracy"], 4)
+  ),
+  Kappa = c(
+    round(conf_mat_rf_tuned$overall["Kappa"], 4),
+    round(rf_conf_mat$overall["Kappa"], 4),
+    round(conf_mat_knn$overall["Kappa"], 4)
+  )
+)
+
+kable(overall_metrics, caption = "Overall Accuracy & Kappa: RF Tuned vs RF Untuned vs k-NN") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+**Interpretation**
+
+* From the results, it's clear that the tuned Random Forest outperforms the others, achieving the highest accuracy (0.7500) and Kappa (0.6663), indicating both good predictive power and strong agreement between predicted and actual classes. 
+* The untuned Random Forest follows with moderate accuracy (0.6875) and Kappa (0.5831), still performing decently but showing that tuning helped. 
+* The k-NN model performs the weakest overall, with the lowest accuracy (0.5417	) and Kappa (0.3850), suggesting it may not be well-suited for this classification task or requires more tuning and feature scaling.
+
+<h1 style="text-align:center;">♥ Conclusion ♥</h1>
+
+In this project, we set out to predict player salary levels using the Hitters dataset by applying and comparing multiple classification models. After cleaning the data and preparing the variables, we explored multinomial logistic regression, Random Forest (both tuned and untuned), and k-nearest neighbors (k-NN). The focus wasn’t just on building models but also on understanding their performance using meaningful evaluation metrics like accuracy, Cohen’s kappa, and class-wise sensitivity, specificity, and balanced accuracy.
+
+From our results, the tuned Random Forest consistently performed the best. It achieved the highest overall accuracy (75%) and Cohen’s kappa (0.6663), suggesting strong agreement between the predicted and actual salary classes. It also delivered strong class-wise performance, especially for higher-level salary classes like Pro and MVP. The untuned Random Forest still performed fairly well but was slightly behind the tuned version in all metrics. On the other hand, k-NN showed the weakest performance, with an accuracy of 50% and a much lower kappa score (0.3850), particularly struggling with distinguishing higher salary classes.
+
+Overall, this comparison highlights the value of tuning machine learning models and choosing algorithms that can handle class imbalance effectively. While simpler models like k-NN are easy to implement, they may not always perform well in more complex classification tasks. The Random Forest, especially when tuned, showed the best balance between accuracy and generalization, making it the most reliable model for this dataset.
+
+*Our group had some assistance from OpenAI for debugging and occasional help with understanding outputs or cleaning up explanations.*
